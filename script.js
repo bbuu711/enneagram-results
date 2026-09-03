@@ -62,7 +62,10 @@ function getStoredRecords() {
   try {
     const raw = localStorage.getItem('enneagram_results_db');
     if (!raw) return [];
-    return JSON.parse(raw);
+    let list = JSON.parse(raw);
+    // Filter out test record '조부경'
+    list = list.filter(r => !(r.tester && r.tester.name && r.tester.name.includes('조부경')));
+    return list;
   } catch (e) {
     console.error('Error loading records:', e);
     return [];
@@ -228,14 +231,32 @@ function renderParticipantsTable(recordsToRender = null) {
       <td><span class="badge badge-gold">${pTypeNum}번. ${pTypeName}</span></td>
       <td><span class="badge badge-purple">${wingCode}</span></td>
       <td>${scoresChipsHTML}</td>
-      <td>
+      <td style="display: flex; gap: 6px;">
         <button class="btn btn-secondary btn-view-report" style="font-size: 12px; padding: 4px 10px;">상세 분석</button>
+        <button class="btn btn-danger btn-delete-record" style="font-size: 12px; padding: 4px 8px;" title="기록 삭제">삭제</button>
       </td>
     `;
 
     tr.querySelector('.btn-view-report').addEventListener('click', () => {
       displayDetailedReport(record);
     });
+    const delBtn = tr.querySelector('.btn-delete-record');
+    if (delBtn) {
+      delBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const rName = (record.tester && record.tester.name) || '해당';
+        if (confirm(`정말 [${rName}] 님의 검사 기록을 삭제하시겠습니까?`)) {
+          let all = getStoredRecords();
+          all = all.filter(r => r.id !== record.id);
+          saveStoredRecords(all);
+          renderParticipantsTable();
+          if (currentActiveRecord && currentActiveRecord.id === record.id) {
+            reportCard.style.display = 'none';
+          }
+          showStatus(`[${rName}] 님의 기록이 삭제되었습니다.`, 'info');
+        }
+      });
+    }
 
     participantsTbody.appendChild(tr);
   });
