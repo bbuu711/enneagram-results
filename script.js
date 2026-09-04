@@ -69,11 +69,14 @@ let currentActiveRecord = null;
 let supabaseClient = null;
 
 // --- Supabase Client Manager ---
-function initSupabase() {
-  const url = localStorage.getItem('supabase_url') || window.SUPABASE_URL || '';
-  const key = localStorage.getItem('supabase_anon_key') || window.SUPABASE_ANON_KEY || '';
+const DEFAULT_SUPABASE_URL = 'https://qcfpkwubdngeqtmxrjrz.supabase.co';
+const DEFAULT_SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFjZnBrd3ViZG5nZXF0bXhyanJ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0NTM0MDQsImV4cCI6MjEwNDAyOTQwNH0.rnziVpIWggyCBeF6uIMc1OaDMSNJGAIQ9NMm7aho7dg';
 
-  if (url && key && window.supabase && !url.includes('YOUR_SUPABASE_PROJECT_URL')) {
+function initSupabase() {
+  const url = localStorage.getItem('supabase_url') || DEFAULT_SUPABASE_URL;
+  const key = localStorage.getItem('supabase_anon_key') || DEFAULT_SUPABASE_KEY;
+
+  if (url && key && window.supabase) {
     try {
       supabaseClient = window.supabase.createClient(url, key);
       dbStatusBadge.textContent = '🟢 클라우드 DB 연결됨';
