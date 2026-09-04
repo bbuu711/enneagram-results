@@ -47,6 +47,8 @@ const searchStatus = document.getElementById('search-status');
 const participantsSection = document.getElementById('participants-section');
 const participantsTbody = document.getElementById('participants-tbody');
 const participantCount = document.getElementById('participant-count');
+const dbStatusBadge = document.getElementById('db-status-badge');
+const btnRefreshData = document.getElementById('btn-refresh-data');
 const btnSeedSample = document.getElementById('btn-seed-sample');
 const btnExportAllCsv = document.getElementById('btn-export-all-csv');
 
@@ -55,19 +57,140 @@ const btnCloseReport = document.getElementById('btn-close-report');
 const btnPrintReport = document.getElementById('btn-print-report');
 const btnExportSingleCsv = document.getElementById('btn-export-single-csv');
 
-let currentActiveRecord = null;
+// DB Modal elements
+const dbModal = document.getElementById('db-modal');
+const btnOpenDbModal = document.getElementById('btn-open-db-modal');
+const btnCancelDb = document.getElementById('btn-cancel-db');
+const btnSaveDb = document.getElementById('btn-save-db');
+const cfgSupabaseUrl = document.getElementById('cfg-supabase-url');
+const cfgSupabaseKey = document.getElementById('cfg-supabase-key');
 
-// --- Load Database Records ---
+let currentActiveRecord = null;
+let supabaseClient = null;
+
+// --- Supabase Client Manager ---
+function initSupabase() {
+  const url = localStorage.getItem('supabase_url') || window.SUPABASE_URL || '';
+  const key = localStorage.getItem('supabase_anon_key') || window.SUPABASE_ANON_KEY || '';
+
+  if (url && key && window.supabase && !url.includes('YOUR_SUPABASE_PROJECT_URL')) {
+    try {
+      supabaseClient = window.supabase.createClient(url, key);
+      dbStatusBadge.textContent = '🟢 클라우드 DB 연결됨';
+      dbStatusBadge.style.background = 'rgba(34, 197, 94, 0.2)';
+      dbStatusBadge.style.color = '#86efac';
+      dbStatusBadge.style.borderColor = 'rgba(34, 197, 94, 0.4)';
+      
+      // Subscribe to realtime inserts
+      setupRealtimeListener();
+    } catch (e) {
+      console.warn('Supabase initialization error:', e);
+      setLocalStatus();
+    }
+  } else {
+    setLocalStatus();
+  }
+}
+
+function setLocalStatus() {
+  dbStatusBadge.textContent = '⚪ 로컬 스토리지 모드';
+  dbStatusBadge.style.background = 'rgba(148, 163, 184, 0.15)';
+  dbStatusBadge.style.color = '#cbd5e1';
+  dbStatusBadge.style.borderColor = 'rgba(148, 163, 184, 0.3)';
+}
+
+function setupRealtimeListener() {
+  if (!supabaseClient) return;
+  try {
+    supabaseClient
+      .channel('enneagram_results_realtime')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'enneagram_results' }, payload => {
+        console.log('Realtime new result received:', payload.new);
+        showStatus(`🔔 새로운 검사 제출: [${payload.new.name || '방랑자'}] 님의 결과가 실시간으로 수신되었습니다!`, 'info');
+        loadAllRecords();
+      })
+      .subscribe();
+  } catch (e) {
+    console.warn('Realtime subscription error:', e);
+  }
+}
+
+// --- Load Records (Cloud Supabase + Local Merge) ---
+async function loadAllRecords() {
+  let records = [];
+
+  // 1. Try Supabase
+  if (supabaseClient) {
+    try {
+      const { data, error } = await supabaseClient
+        .from('enneagram_results')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!error && data) {
+        records = data.map(row => ({
+          id: row.id || ('res_' + Date.now()),
+          tester: {
+            name: row.name || '방랑자',
+            age: row.age || '',
+            job: row.job || '',
+            contact: row.contact || ''
+          },
+          contactLast4: (row.contact ? String(row.contact).replace(/\D/g, '').slice(-4) : ''),
+          primaryType: {
+            number: row.primary_type_number || 1,
+            name: row.primary_type_name || ''
+          },
+          top3: [
+            { type: row.primary_type_number || 1, name: row.top1_name || '', score: (row.type_scores ? row.type_scores[row.primary_type_number] : 0) },
+            { type: 2, name: row.top2_name || '', score: 0 },
+            { type: 3, name: row.top3_name || '', score: 0 }
+          ],
+          scores: row.type_scores || {},
+          percentages: row.type_percentages || {},
+          answers: row.answers || {},
+          createdAt: row.created_at,
+          submittedAtFormatted: row.created_at ? new Date(row.created_at).toLocaleString('ko-KR') : ''
+        }));
+      }
+    } catch (e) {
+      console.error('Supabase fetch error:', e);
+    }
+  }
+
+  // 2. LocalStorage merge
+  try {
+    const rawLocal = localStorage.getItem('enneagram_results_db');
+    if (rawLocal) {
+      const localList = JSON.parse(rawLocal);
+      localList.forEach(loc => {
+        if (!records.some(r => r.id === loc.id || (r.tester && loc.tester && r.tester.name === loc.tester.name && r.createdAt === loc.createdAt))) {
+          records.push(loc);
+        }
+      });
+    }
+  } catch (e) {
+    console.error('Local merge error:', e);
+  }
+
+  // Filter out test record '조부경'
+  records = records.filter(r => !(r.tester && r.tester.name && r.tester.name.includes('조부경')));
+  
+  // Sort latest first
+  records.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  saveStoredRecords(records);
+  renderParticipantsTable(records);
+  return records;
+}
+
 function getStoredRecords() {
   try {
     const raw = localStorage.getItem('enneagram_results_db');
     if (!raw) return [];
     let list = JSON.parse(raw);
-    // Filter out test record '조부경'
     list = list.filter(r => !(r.tester && r.tester.name && r.tester.name.includes('조부경')));
     return list;
   } catch (e) {
-    console.error('Error loading records:', e);
     return [];
   }
 }
@@ -75,14 +198,13 @@ function getStoredRecords() {
 function saveStoredRecords(records) {
   try {
     localStorage.setItem('enneagram_results_db', JSON.stringify(records));
-  } catch (e) {
-    console.error('Error saving records:', e);
-  }
+  } catch (e) {}
 }
 
 // --- Initialize Page ---
 document.addEventListener('DOMContentLoaded', () => {
-  renderParticipantsTable();
+  initSupabase();
+  loadAllRecords();
   setupEventListeners();
 });
 
@@ -99,6 +221,15 @@ function setupEventListeners() {
     reportCard.style.display = 'none';
   });
 
+  if (btnRefreshData) {
+    btnRefreshData.addEventListener('click', async () => {
+      btnRefreshData.textContent = '동기화 중...';
+      await loadAllRecords();
+      setTimeout(() => { btnRefreshData.textContent = '🔄 실시간 동기화'; }, 600);
+      showStatus('최신 검사 데이터를 클라우드 및 저장소에서 동기화했습니다.', 'info');
+    });
+  }
+
   if (btnSeedSample) {
     btnSeedSample.addEventListener('click', seedSampleData);
   }
@@ -111,9 +242,7 @@ function setupEventListeners() {
   }
 
   if (btnPrintReport) {
-    btnPrintReport.addEventListener('click', () => {
-      window.print();
-    });
+    btnPrintReport.addEventListener('click', () => { window.print(); });
   }
 
   if (btnExportSingleCsv) {
@@ -130,6 +259,32 @@ function setupEventListeners() {
         return;
       }
       exportRecordsToCSV(records, `enneagram_all_results_${Date.now()}.csv`);
+    });
+  }
+
+  // DB Modal events
+  if (btnOpenDbModal) {
+    btnOpenDbModal.addEventListener('click', () => {
+      cfgSupabaseUrl.value = localStorage.getItem('supabase_url') || '';
+      cfgSupabaseKey.value = localStorage.getItem('supabase_anon_key') || '';
+      dbModal.style.display = 'flex';
+    });
+  }
+
+  if (btnCancelDb) {
+    btnCancelDb.addEventListener('click', () => { dbModal.style.display = 'none'; });
+  }
+
+  if (btnSaveDb) {
+    btnSaveDb.addEventListener('click', () => {
+      const url = (cfgSupabaseUrl.value || '').trim();
+      const key = (cfgSupabaseKey.value || '').trim();
+      localStorage.setItem('supabase_url', url);
+      localStorage.setItem('supabase_anon_key', key);
+      dbModal.style.display = 'none';
+      initSupabase();
+      loadAllRecords();
+      alert('Supabase DB 접속 설정이 저장되었습니다.');
     });
   }
 }
@@ -194,14 +349,14 @@ function renderParticipantsTable(recordsToRender = null) {
     participantsTbody.innerHTML = `
       <tr>
         <td colspan="7" style="text-align: center; color: #64748b; padding: 24px;">
-          등록된 검사 결과 데이터가 없습니다. 메인 검사 사이트에서 [제출하기]를 누르면 여기에 등록됩니다.
+          등록된 검사 결과 데이터가 없습니다. 검사 사이트에서 제출하거나 [실시간 동기화]를 눌러보세요.
         </td>
       </tr>
     `;
     return;
   }
 
-  records.slice().reverse().forEach((record) => {
+  records.forEach((record) => {
     const tr = document.createElement('tr');
     const dateStr = record.submittedAtFormatted || (record.createdAt ? new Date(record.createdAt).toLocaleDateString('ko-KR') : '-');
     const name = (record.tester && record.tester.name) || '익명 방랑자';
@@ -240,12 +395,21 @@ function renderParticipantsTable(recordsToRender = null) {
     tr.querySelector('.btn-view-report').addEventListener('click', () => {
       displayDetailedReport(record);
     });
+
     const delBtn = tr.querySelector('.btn-delete-record');
     if (delBtn) {
-      delBtn.addEventListener('click', (e) => {
+      delBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
         const rName = (record.tester && record.tester.name) || '해당';
         if (confirm(`정말 [${rName}] 님의 검사 기록을 삭제하시겠습니까?`)) {
+          // Delete from Supabase if connected
+          if (supabaseClient && record.id && !String(record.id).startsWith('sample_')) {
+            try {
+              await supabaseClient.from('enneagram_results').delete().eq('id', record.id);
+            } catch (err) {
+              console.warn('Supabase delete error:', err);
+            }
+          }
           let all = getStoredRecords();
           all = all.filter(r => r.id !== record.id);
           saveStoredRecords(all);
@@ -304,13 +468,12 @@ function displayDetailedReport(record) {
     top3Container.appendChild(card);
   });
 
-  // 3. 1~9 All Types Detailed Score Grid & Table (NEW)
+  // 3. 1~9 All Types Detailed Score Grid & Table
   const allScoresContainer = document.getElementById('all-scores-container');
   allScoresContainer.innerHTML = '';
   const scores = record.scores || {};
   const percentages = record.percentages || {};
 
-  // Sort scores to determine rank for each of 1..9
   const scoreEntries = [];
   for (let i = 1; i <= 9; i++) {
     scoreEntries.push({ type: i, score: scores[i] || 0 });
@@ -460,7 +623,6 @@ function renderCharts(scores) {
     '#eab308', '#b91c1c', '#059669'
   ];
 
-  // 1. Bar Chart (1~9 Distribution)
   const barCanvas = document.getElementById('scoresBarChart');
   if (barChartInstance) barChartInstance.destroy();
 
@@ -503,11 +665,10 @@ function renderCharts(scores) {
     }
   });
 
-  // 2. Radar Chart (9 Archetypes Balance)
   const radarCanvas = document.getElementById('triadRadarChart');
   if (radarChartInstance) radarChartInstance.destroy();
 
-  radarCanvas = new Chart(radarCanvas, {
+  radarChartInstance = new Chart(radarCanvas, {
     type: 'radar',
     data: {
       labels: ['1.시계공', '2.큐피드', '3.소녀', '4.거울', '5.방랑자', '6.예언자', '7.광대', '8.기사', '9.거인'],
