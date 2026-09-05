@@ -57,7 +57,6 @@ const btnCloseReport = document.getElementById('btn-close-report');
 const btnPrintReport = document.getElementById('btn-print-report');
 const btnExportSingleCsv = document.getElementById('btn-export-single-csv');
 
-// DB Modal elements
 const dbModal = document.getElementById('db-modal');
 const btnOpenDbModal = document.getElementById('btn-open-db-modal');
 const btnCancelDb = document.getElementById('btn-cancel-db');
@@ -68,7 +67,7 @@ const cfgSupabaseKey = document.getElementById('cfg-supabase-key');
 let currentActiveRecord = null;
 let supabaseClient = null;
 
-// --- Supabase Client Manager ---
+// --- Supabase Credentials ---
 const DEFAULT_SUPABASE_URL = 'https://qcfpkwubdngeqtmxrjrz.supabase.co';
 const DEFAULT_SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFjZnBrd3ViZG5nZXF0bXhyanJ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0NTM0MDQsImV4cCI6MjEwNDAyOTQwNH0.rnziVpIWggyCBeF6uIMc1OaDMSNJGAIQ9NMm7aho7dg';
 
@@ -81,30 +80,14 @@ function getCleanSupabaseCredentials() {
 
 function initSupabase() {
   const { url, key } = getCleanSupabaseCredentials();
-
   if (url && key && window.supabase) {
     try {
       supabaseClient = window.supabase.createClient(url, key);
-      dbStatusBadge.textContent = '🟢 클라우드 DB 연결됨';
-      dbStatusBadge.style.background = 'rgba(34, 197, 94, 0.2)';
-      dbStatusBadge.style.color = '#86efac';
-      dbStatusBadge.style.borderColor = 'rgba(34, 197, 94, 0.4)';
-      
       setupRealtimeListener();
     } catch (e) {
-      console.warn('Supabase initialization error:', e);
-      setLocalStatus();
+      console.warn('Supabase init error:', e);
     }
-  } else {
-    setLocalStatus();
   }
-}
-
-function setLocalStatus() {
-  dbStatusBadge.textContent = '⚪ 클라우드 DB 대기중';
-  dbStatusBadge.style.background = 'rgba(148, 163, 184, 0.15)';
-  dbStatusBadge.style.color = '#cbd5e1';
-  dbStatusBadge.style.borderColor = 'rgba(148, 163, 184, 0.3)';
 }
 
 function setupRealtimeListener() {
@@ -113,17 +96,29 @@ function setupRealtimeListener() {
     supabaseClient
       .channel('enneagram_results_realtime')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'enneagram_results' }, payload => {
-        console.log('Realtime new result received:', payload.new);
         showStatus(`🔔 새로운 검사 제출: [${payload.new.name || '방랑자'}] 님의 결과가 수신되었습니다!`, 'info');
         loadAllRecords();
       })
       .subscribe();
-  } catch (e) {
-    console.warn('Realtime subscription error:', e);
-  }
+  } catch (e) {}
 }
 
-// --- Load Records (Cloud Supabase + REST Fallback + Local Merge) ---
+// Helper to extract score safely from string or number keys
+function extractScore(scores, num) {
+  if (!scores) return 0;
+  if (scores[num] !== undefined) return Number(scores[num]);
+  if (scores[String(num)] !== undefined) return Number(scores[String(num)]);
+  return 0;
+}
+
+function extractPct(pcts, num, fallbackScore) {
+  if (!pcts) return Math.round((fallbackScore / 40) * 100);
+  if (pcts[num] !== undefined) return Number(pcts[num]);
+  if (pcts[String(num)] !== undefined) return Number(pcts[String(num)]);
+  return Math.round((fallbackScore / 40) * 100);
+}
+
+// --- Load Records (Cloud Supabase + Direct REST Fallback + Local Merge) ---
 async function loadAllRecords() {
   const { url, key } = getCleanSupabaseCredentials();
   let rawRows = [];
@@ -136,15 +131,13 @@ async function loadAllRecords() {
         .select('*')
         .order('created_at', { ascending: false });
 
-      if (!error && Array.isArray(data)) {
+      if (!error && Array.isArray(data) && data.length > 0) {
         rawRows = data;
       }
-    } catch (e) {
-      console.warn('Supabase SDK fetch error:', e);
-    }
+    } catch (e) {}
   }
 
-  // 2. Direct REST Fetch Fallback if SDK didn't get rows
+  // 2. Direct REST Fetch Fallback (always reliable)
   if (rawRows.length === 0 && url && key) {
     try {
       const res = await fetch(`${url}/rest/v1/enneagram_results?select=*&order=created_at.desc`, {
@@ -157,7 +150,7 @@ async function loadAllRecords() {
         rawRows = await res.json();
       }
     } catch (err) {
-      console.warn('REST fallback fetch error:', err);
+      console.warn('REST fallback error:', err);
     }
   }
 
@@ -169,8 +162,8 @@ async function loadAllRecords() {
       
       const sortedList = [];
       for (let i = 1; i <= 9; i++) {
-        const sc = rowScores[i] !== undefined ? Number(rowScores[i]) : 0;
-        const pct = rowPercentages[i] !== undefined ? Number(rowPercentages[i]) : Math.round((sc / 40) * 100);
+        const sc = extractScore(rowScores, i);
+        const pct = extractPct(rowPercentages, i, sc);
         sortedList.push({
           type: i,
           name: archetypesMeta[i] ? archetypesMeta[i].name : `${i}번`,
@@ -182,12 +175,16 @@ async function loadAllRecords() {
       const computedTop3 = sortedList.slice(0, 3);
       const pNum = computedTop3[0] ? computedTop3[0].type : (row.primary_type_number || 1);
 
-      // Calculate Wing
+      // Wing calculation
       const leftNum = pNum === 1 ? 9 : pNum - 1;
       const rightNum = pNum === 9 ? 1 : pNum + 1;
-      const leftScore = rowScores[leftNum] !== undefined ? Number(rowScores[leftNum]) : 0;
-      const rightScore = rowScores[rightNum] !== undefined ? Number(rowScores[rightNum]) : 0;
+      const leftScore = extractScore(rowScores, leftNum);
+      const rightScore = extractScore(rowScores, rightNum);
       const domNum = leftScore >= rightScore ? leftNum : rightNum;
+
+      const rawContact = row.contact ? String(row.contact) : '';
+      const cleanDigits = rawContact.replace(/\D/g, '');
+      const last4 = cleanDigits.length >= 4 ? cleanDigits.slice(-4) : cleanDigits;
 
       return {
         id: row.id || ('res_' + Date.now()),
@@ -195,9 +192,9 @@ async function loadAllRecords() {
           name: row.name || '방랑자',
           age: row.age || '',
           job: row.job || '',
-          contact: row.contact || ''
+          contact: rawContact
         },
-        contactLast4: (row.contact ? String(row.contact).replace(/\D/g, '').slice(-4) : ''),
+        contactLast4: last4,
         primaryType: {
           number: pNum,
           name: archetypesMeta[pNum] ? archetypesMeta[pNum].name : row.primary_type_name || ''
@@ -232,20 +229,24 @@ async function loadAllRecords() {
         }
       });
     }
-  } catch (e) {
-    console.error('Local merge error:', e);
-  }
+  } catch (e) {}
 
-  // Sort latest first
   records.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
   saveStoredRecords(records);
   renderParticipantsTable(records);
 
-  if (records.length > 0) {
-    dbStatusBadge.textContent = '🟢 클라우드 DB 연결됨';
-    dbStatusBadge.style.background = 'rgba(34, 197, 94, 0.2)';
-    dbStatusBadge.style.color = '#86efac';
-    dbStatusBadge.style.borderColor = 'rgba(34, 197, 94, 0.4)';
+  if (dbStatusBadge) {
+    if (records.length > 0) {
+      dbStatusBadge.textContent = '🟢 클라우드 DB 연결됨';
+      dbStatusBadge.style.background = 'rgba(34, 197, 94, 0.2)';
+      dbStatusBadge.style.color = '#86efac';
+      dbStatusBadge.style.borderColor = 'rgba(34, 197, 94, 0.4)';
+    } else {
+      dbStatusBadge.textContent = '⚪ 클라우드 DB 대기중';
+      dbStatusBadge.style.background = 'rgba(148, 163, 184, 0.15)';
+      dbStatusBadge.style.color = '#cbd5e1';
+      dbStatusBadge.style.borderColor = 'rgba(148, 163, 184, 0.3)';
+    }
   }
 
   return records;
@@ -255,8 +256,7 @@ function getStoredRecords() {
   try {
     const raw = localStorage.getItem('enneagram_results_db');
     if (!raw) return [];
-    let list = JSON.parse(raw);
-    return list;
+    return JSON.parse(raw);
   } catch (e) {
     return [];
   }
@@ -273,6 +273,11 @@ document.addEventListener('DOMContentLoaded', () => {
   initSupabase();
   loadAllRecords();
   setupEventListeners();
+
+  // Auto-sync poll every 8 seconds
+  setInterval(() => {
+    loadAllRecords();
+  }, 8000);
 });
 
 function setupEventListeners() {
@@ -280,11 +285,12 @@ function setupEventListeners() {
   searchNameInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') handleSearch(); });
   searchLast4Input.addEventListener('keypress', (e) => { if (e.key === 'Enter') handleSearch(); });
   
-  btnShowAll.addEventListener('click', () => {
+  btnShowAll.addEventListener('click', async () => {
     searchNameInput.value = '';
     searchLast4Input.value = '';
     showStatus('', '');
-    renderParticipantsTable();
+    const all = await loadAllRecords();
+    renderParticipantsTable(all);
     reportCard.style.display = 'none';
   });
 
@@ -292,8 +298,8 @@ function setupEventListeners() {
     btnRefreshData.addEventListener('click', async () => {
       btnRefreshData.textContent = '동기화 중...';
       await loadAllRecords();
-      setTimeout(() => { btnRefreshData.textContent = '🔄 실시간 동기화'; }, 600);
-      showStatus('최신 검사 데이터를 클라우드 및 저장소에서 동기화했습니다.', 'info');
+      setTimeout(() => { btnRefreshData.textContent = '🔄 실시간 동기화'; }, 500);
+      showStatus('최신 검사 데이터를 클라우드에서 동기화했습니다.', 'info');
     });
   }
 
@@ -329,7 +335,6 @@ function setupEventListeners() {
     });
   }
 
-  // DB Modal events
   if (btnOpenDbModal) {
     btnOpenDbModal.addEventListener('click', () => {
       cfgSupabaseUrl.value = localStorage.getItem('supabase_url') || '';
@@ -343,31 +348,33 @@ function setupEventListeners() {
   }
 
   if (btnSaveDb) {
-    btnSaveDb.addEventListener('click', () => {
+    btnSaveDb.addEventListener('click', async () => {
       const url = (cfgSupabaseUrl.value || '').trim();
       const key = (cfgSupabaseKey.value || '').trim();
       localStorage.setItem('supabase_url', url);
       localStorage.setItem('supabase_anon_key', key);
       dbModal.style.display = 'none';
       initSupabase();
-      loadAllRecords();
+      await loadAllRecords();
       alert('Supabase DB 접속 설정이 저장되었습니다.');
     });
   }
 }
 
-// --- Search Handler (이름 + 전화번호 끝자리 4자리) ---
+// --- Search Handler (이름 또는 전화번호 끝자리 4자리) ---
 async function handleSearch() {
   const queryName = (searchNameInput.value || '').trim().toLowerCase();
   const queryLast4 = (searchLast4Input.value || '').trim().replace(/\D/g, '');
 
-  if (!queryName && !queryLast4) {
-    showStatus('검색할 이름 또는 전화번호 뒷 4자리를 입력해주세요.', 'error');
-    return;
-  }
-
   showStatus('클라우드 DB에서 실시간 검색 중...', 'info');
   const records = await loadAllRecords();
+
+  if (!queryName && !queryLast4) {
+    // If empty, show all records
+    showStatus(`전체 ${records.length}명의 검사 기록입니다.`, 'info');
+    renderParticipantsTable(records);
+    return;
+  }
 
   const filtered = records.filter(r => {
     const testerName = ((r.tester && r.tester.name) || '').trim().toLowerCase();
@@ -385,7 +392,7 @@ async function handleSearch() {
   });
 
   if (filtered.length === 0) {
-    showStatus(`일치하는 참가자 기록을 찾을 수 없습니다. (입력: ${queryName || '-'} / ${queryLast4 || '-'})`, 'error');
+    showStatus(`일치하는 참가자 기록을 찾을 수 없습니다. (검색: ${queryName || '-'} / ${queryLast4 || '-'})`, 'error');
     reportCard.style.display = 'none';
     renderParticipantsTable([]);
   } else if (filtered.length === 1) {
@@ -404,7 +411,7 @@ function showStatus(text, type) {
     searchStatus.style.display = 'none';
     return;
   }
-  searchStatus.className = `status-msg pixel-font ${type}`;
+  searchStatus.className = `status-msg ${type}`;
   searchStatus.textContent = text;
   searchStatus.style.display = 'block';
 }
@@ -439,12 +446,11 @@ function renderParticipantsTable(recordsToRender = null) {
     const pTypeName = archetypesMeta[pTypeNum] ? archetypesMeta[pTypeNum].name : '시계공';
     const wingCode = record.wing ? record.wing.code : `${pTypeNum}w${pTypeNum === 1 ? 9 : pTypeNum - 1}`;
 
-    // Compact 1~9 scores summary chips
     const scores = record.scores || {};
     let scoresChipsHTML = '<div class="table-scores-summary">';
     for (let i = 1; i <= 9; i++) {
       const isTop = (i === pTypeNum);
-      const val = scores[i] !== undefined ? scores[i] : '-';
+      const val = extractScore(scores, i);
       scoresChipsHTML += `<span class="score-chip ${isTop ? 'top' : ''}">${i}번:${val}점</span>`;
     }
     scoresChipsHTML += '</div>';
@@ -472,18 +478,19 @@ function renderParticipantsTable(recordsToRender = null) {
         e.stopPropagation();
         const rName = (record.tester && record.tester.name) || '해당';
         if (confirm(`정말 [${rName}] 님의 검사 기록을 삭제하시겠습니까?`)) {
-          // Delete from Supabase if connected
-          if (supabaseClient && record.id && !String(record.id).startsWith('sample_')) {
+          const { url, key } = getCleanSupabaseCredentials();
+          if (record.id && !String(record.id).startsWith('sample_') && url && key) {
             try {
-              await supabaseClient.from('enneagram_results').delete().eq('id', record.id);
-            } catch (err) {
-              console.warn('Supabase delete error:', err);
-            }
+              await fetch(`${url}/rest/v1/enneagram_results?id=eq.${record.id}`, {
+                method: 'DELETE',
+                headers: { 'apikey': key, 'Authorization': `Bearer ${key}` }
+              });
+            } catch (err) {}
           }
           let all = getStoredRecords();
           all = all.filter(r => r.id !== record.id);
           saveStoredRecords(all);
-          renderParticipantsTable();
+          renderParticipantsTable(all);
           if (currentActiveRecord && currentActiveRecord.id === record.id) {
             reportCard.style.display = 'none';
           }
@@ -514,17 +521,17 @@ function displayDetailedReport(record) {
   const primaryMeta = archetypesMeta[primaryNum] || archetypesMeta[1];
   document.getElementById('report-primary-badge').textContent = `주유형: ${primaryNum}번 ${primaryMeta.name}`;
 
-  // 2. Top 3 Cards (Accurately computed from scores)
-  const top3Container = document.getElementById('top3-container');
-  top3Container.innerHTML = '';
-
   const scores = record.scores || {};
   const percentages = record.percentages || {};
 
+  // 2. Top 3 Cards
+  const top3Container = document.getElementById('top3-container');
+  top3Container.innerHTML = '';
+
   const sortedList = [];
   for (let i = 1; i <= 9; i++) {
-    const sc = scores[i] !== undefined ? Number(scores[i]) : 0;
-    const pct = percentages[i] !== undefined ? Number(percentages[i]) : Math.round((sc / 40) * 100);
+    const sc = extractScore(scores, i);
+    const pct = extractPct(percentages, i, sc);
     sortedList.push({
       type: i,
       score: sc,
@@ -551,27 +558,20 @@ function displayDetailedReport(record) {
     top3Container.appendChild(card);
   });
 
-  // 3. 1~9 All Types Detailed Score Grid & Table
+  // 3. 1~9 All Types Detailed Score Grid
   const allScoresContainer = document.getElementById('all-scores-container');
   allScoresContainer.innerHTML = '';
-  const scores = record.scores || {};
-  const percentages = record.percentages || {};
 
-  const scoreEntries = [];
-  for (let i = 1; i <= 9; i++) {
-    scoreEntries.push({ type: i, score: scores[i] || 0 });
-  }
-  scoreEntries.sort((a, b) => b.score - a.score);
   const rankMap = {};
-  scoreEntries.forEach((entry, idx) => {
+  sortedList.forEach((entry, idx) => {
     rankMap[entry.type] = idx + 1;
   });
 
   for (let i = 1; i <= 9; i++) {
     const meta = archetypesMeta[i];
-    const scoreVal = scores[i] !== undefined ? scores[i] : 0;
-    const pctVal = percentages[i] !== undefined ? percentages[i] : Math.round((scoreVal / 40) * 100);
-    const rank = rankMap[i];
+    const scoreVal = extractScore(scores, i);
+    const pctVal = extractPct(percentages, i, scoreVal);
+    const rank = rankMap[i] || i;
     const isDominant = (i === primaryNum);
 
     let rankBadgeText = `${rank}순위`;
@@ -583,13 +583,13 @@ function displayDetailedReport(record) {
     card.className = `score-card ${isDominant ? 'dominant' : ''}`;
     card.innerHTML = `
       <div class="score-card-header">
-        <span class="score-card-type-name pixel-font">${i}번. ${meta.name}</span>
-        <span class="score-card-rank-badge pixel-font">${rankBadgeText}</span>
+        <span class="score-card-type-name serif-font">${i}번. ${meta.name}</span>
+        <span class="score-card-rank-badge gothic-font">${rankBadgeText}</span>
       </div>
-      <div style="font-size: 12px; color: ${meta.color};" class="pixel-font">${meta.center}</div>
+      <div style="font-size: 12px; color: ${meta.color};" class="gothic-font">${meta.center}</div>
       <div class="score-card-body">
-        <span class="score-card-main-score pixel-font">${scoreVal}점</span>
-        <span class="score-card-pct pixel-font">백분위 ${pctVal}%</span>
+        <span class="score-card-main-score gothic-font">${scoreVal}점</span>
+        <span class="score-card-pct gothic-font">백분위 ${pctVal}%</span>
       </div>
       <div class="score-card-bar-track">
         <div class="score-card-bar-fill" style="width: ${pctVal}%; background: ${meta.color};"></div>
@@ -598,14 +598,14 @@ function displayDetailedReport(record) {
     allScoresContainer.appendChild(card);
   }
 
-  // 4. Wing (날개) Analysis
+  // 4. Wing Analysis
   const wingContainer = document.getElementById('wing-container');
   let wing = record.wing;
   if (!wing) {
     const leftNum = primaryNum === 1 ? 9 : primaryNum - 1;
     const rightNum = primaryNum === 9 ? 1 : primaryNum + 1;
-    const leftScore = (record.scores && record.scores[leftNum]) || 0;
-    const rightScore = (record.scores && record.scores[rightNum]) || 0;
+    const leftScore = extractScore(scores, leftNum);
+    const rightScore = extractScore(scores, rightNum);
     const domNum = leftScore >= rightScore ? leftNum : rightNum;
     wing = {
       code: `${primaryNum}w${domNum}`,
@@ -625,19 +625,19 @@ function displayDetailedReport(record) {
 
   wingContainer.innerHTML = `
     <div class="wing-header">
-      <div class="wing-code-badge pixel-font">🪽 판별된 날개: ${wing.code} [${wingInfo.title}]</div>
-      <div style="font-size: 13px; color: #94a3b8;" class="pixel-font">
+      <div class="wing-code-badge serif-font">🪽 판별된 날개: ${wing.code} [${wingInfo.title}]</div>
+      <div style="font-size: 13.5px; color: #94a3b8;" class="gothic-font">
         좌측 날개(${wing.leftWingNum}번): ${wing.leftWingScore}점 | 우측 날개(${wing.rightWingNum}번): ${wing.rightWingScore}점
       </div>
     </div>
-    <p class="wing-desc pixel-font">${wingInfo.desc}</p>
+    <p class="wing-desc gothic-font">${wingInfo.desc}</p>
   `;
 
   // 5. Triad 3 Core Energies
   const triadContainer = document.getElementById('triad-container');
-  const heartScore = (scores[2] || 0) + (scores[3] || 0) + (scores[4] || 0);
-  const headScore = (scores[5] || 0) + (scores[6] || 0) + (scores[7] || 0);
-  const gutScore = (scores[8] || 0) + (scores[9] || 0) + (scores[1] || 0);
+  const heartScore = extractScore(scores, 2) + extractScore(scores, 3) + extractScore(scores, 4);
+  const headScore = extractScore(scores, 5) + extractScore(scores, 6) + extractScore(scores, 7);
+  const gutScore = extractScore(scores, 8) + extractScore(scores, 9) + extractScore(scores, 1);
   const totalTriad = (heartScore + headScore + gutScore) || 1;
 
   const heartPct = Math.round((heartScore / totalTriad) * 100);
@@ -646,48 +646,50 @@ function displayDetailedReport(record) {
 
   triadContainer.innerHTML = `
     <div class="triad-card heart">
-      <div class="triad-card-title pixel-font">
+      <div class="triad-card-title serif-font">
         <span>💖 가슴(감정) 중심</span>
-        <span>2, 3, 4번</span>
+        <span style="font-size: 13px; font-weight: normal;">2, 3, 4번</span>
       </div>
-      <div class="triad-score-val pixel-font">${heartScore}점 <span style="font-size: 15px; color: var(--rose); font-weight: normal;">(${heartPct}%)</span></div>
+      <div class="triad-score-val gothic-font">${heartScore}점 <span style="font-size: 15px; color: var(--rose); font-weight: normal;">(${heartPct}%)</span></div>
       <div class="triad-bar-track">
         <div class="triad-bar-fill" style="width: ${heartPct}%;"></div>
       </div>
-      <div class="triad-detail-text pixel-font">관계, 타인의 인정, 감정적 연결과 수치심 조절을 동기로 행동합니다.</div>
+      <div class="triad-detail-text gothic-font">관계, 타인의 인정, 감정적 연결과 수치심 조절을 동기로 행동합니다.</div>
     </div>
 
     <div class="triad-card head">
-      <div class="triad-card-title pixel-font">
+      <div class="triad-card-title serif-font">
         <span>🧠 머리(사고) 중심</span>
-        <span>5, 6, 7번</span>
+        <span style="font-size: 13px; font-weight: normal;">5, 6, 7번</span>
       </div>
-      <div class="triad-score-val pixel-font">${headScore}점 <span style="font-size: 15px; color: var(--blue); font-weight: normal;">(${headPct}%)</span></div>
+      <div class="triad-score-val gothic-font">${headScore}점 <span style="font-size: 15px; color: var(--blue); font-weight: normal;">(${headPct}%)</span></div>
       <div class="triad-bar-track">
         <div class="triad-bar-fill" style="width: ${headPct}%;"></div>
       </div>
-      <div class="triad-detail-text pixel-font">지적 탐구, 미래의 안전과 예측, 불안을 줄이기 위한 전략을 추구합니다.</div>
+      <div class="triad-detail-text gothic-font">지적 탐구, 미래의 안전과 예측, 불안을 줄이기 위한 전략을 추구합니다.</div>
     </div>
 
     <div class="triad-card gut">
-      <div class="triad-card-title pixel-font">
+      <div class="triad-card-title serif-font">
         <span>🛡️ 장(본능) 중심</span>
-        <span>8, 9, 1번</span>
+        <span style="font-size: 13px; font-weight: normal;">8, 9, 1번</span>
       </div>
-      <div class="triad-score-val pixel-font">${gutScore}점 <span style="font-size: 15px; color: var(--emerald); font-weight: normal;">(${gutPct}%)</span></div>
+      <div class="triad-score-val gothic-font">${gutScore}점 <span style="font-size: 15px; color: var(--emerald); font-weight: normal;">(${gutPct}%)</span></div>
       <div class="triad-bar-track">
         <div class="triad-bar-fill" style="width: ${gutPct}%;"></div>
       </div>
-      <div class="triad-detail-text pixel-font">생존과 주도권, 내면의 정의감과 자율성을 지키기 위해 에너지를 씁니다.</div>
+      <div class="triad-detail-text gothic-font">생존과 주도권, 내면의 정의감과 자율성을 지키기 위해 에너지를 씁니다.</div>
     </div>
   `;
 
-  // 6. Render Charts
+  // 6. Render Charts (Safe with try/catch)
   renderCharts(scores);
 }
 
 // --- Chart.js Rendering ---
 function renderCharts(scores) {
+  if (typeof Chart === 'undefined') return;
+
   const labels = [
     '1번 시계공', '2번 큐피드', '3번 달리는소녀',
     '4번 거울수집가', '5번 방랑자', '6번 예언자',
@@ -695,9 +697,9 @@ function renderCharts(scores) {
   ];
 
   const scoreData = [
-    scores[1] || 0, scores[2] || 0, scores[3] || 0,
-    scores[4] || 0, scores[5] || 0, scores[6] || 0,
-    scores[7] || 0, scores[8] || 0, scores[9] || 0
+    extractScore(scores, 1), extractScore(scores, 2), extractScore(scores, 3),
+    extractScore(scores, 4), extractScore(scores, 5), extractScore(scores, 6),
+    extractScore(scores, 7), extractScore(scores, 8), extractScore(scores, 9)
   ];
 
   const colors = [
@@ -706,82 +708,88 @@ function renderCharts(scores) {
     '#eab308', '#b91c1c', '#059669'
   ];
 
-  const barCanvas = document.getElementById('scoresBarChart');
-  if (barChartInstance) barChartInstance.destroy();
-
-  barChartInstance = new Chart(barCanvas, {
-    type: 'bar',
-    data: {
-      labels: ['1번', '2번', '3번', '4번', '5번', '6번', '7번', '8번', '9번'],
-      datasets: [{
-        label: '유형별 점수',
-        data: scoreData,
-        backgroundColor: colors.map(c => c + 'cc'),
-        borderColor: colors,
-        borderWidth: 1.5,
-        borderRadius: 4
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      scales: {
-        y: {
-          beginAtZero: true,
-          grid: { color: 'rgba(255,255,255,0.08)' },
-          ticks: { color: '#94a3b8', font: { family: 'NeoDunggeunmoPro-Regular' } }
+  try {
+    const barCanvas = document.getElementById('scoresBarChart');
+    if (barCanvas) {
+      if (barChartInstance) barChartInstance.destroy();
+      barChartInstance = new Chart(barCanvas, {
+        type: 'bar',
+        data: {
+          labels: ['1번', '2번', '3번', '4번', '5번', '6번', '7번', '8번', '9번'],
+          datasets: [{
+            label: '유형별 점수',
+            data: scoreData,
+            backgroundColor: colors.map(c => c + 'cc'),
+            borderColor: colors,
+            borderWidth: 1.5,
+            borderRadius: 6
+          }]
         },
-        x: {
-          grid: { display: false },
-          ticks: { color: '#e2e8f0', font: { family: 'NeoDunggeunmoPro-Regular' } }
-        }
-      },
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            title: (items) => labels[items[0].dataIndex],
-            label: (item) => `점수: ${item.raw}점`
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            y: {
+              beginAtZero: true,
+              grid: { color: 'rgba(255,255,255,0.08)' },
+              ticks: { color: '#94a3b8' }
+            },
+            x: {
+              grid: { display: false },
+              ticks: { color: '#e2e8f0' }
+            }
+          },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                title: (items) => labels[items[0].dataIndex],
+                label: (item) => `점수: ${item.raw}점`
+              }
+            }
           }
         }
-      }
+      });
     }
-  });
 
-  const radarCanvas = document.getElementById('triadRadarChart');
-  if (radarChartInstance) radarChartInstance.destroy();
-
-  radarChartInstance = new Chart(radarCanvas, {
-    type: 'radar',
-    data: {
-      labels: ['1.시계공', '2.큐피드', '3.소녀', '4.거울', '5.방랑자', '6.예언자', '7.광대', '8.기사', '9.거인'],
-      datasets: [{
-        label: '에니어그램 다면 분포',
-        data: scoreData,
-        backgroundColor: 'rgba(251, 191, 36, 0.25)',
-        borderColor: '#fbbf24',
-        borderWidth: 2,
-        pointBackgroundColor: '#fbbf24',
-        pointBorderColor: '#fff',
-        pointHoverRadius: 5
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      scales: {
-        r: {
-          angleLines: { color: 'rgba(255,255,255,0.1)' },
-          grid: { color: 'rgba(255,255,255,0.1)' },
-          pointLabels: { color: '#e2e8f0', font: { family: 'NeoDunggeunmoPro-Regular', size: 11 } },
-          ticks: { backdropColor: 'transparent', color: '#94a3b8', showLabelBackdrop: false }
+    const radarCanvas = document.getElementById('triadRadarChart');
+    if (radarCanvas) {
+      if (radarChartInstance) radarChartInstance.destroy();
+      radarChartInstance = new Chart(radarCanvas, {
+        type: 'radar',
+        data: {
+          labels: ['1.시계공', '2.큐피드', '3.소녀', '4.거울', '5.방랑자', '6.예언자', '7.광대', '8.기사', '9.거인'],
+          datasets: [{
+            label: '에니어그램 다면 분포',
+            data: scoreData,
+            backgroundColor: 'rgba(251, 191, 36, 0.25)',
+            borderColor: '#fbbf24',
+            borderWidth: 2,
+            pointBackgroundColor: '#fbbf24',
+            pointBorderColor: '#fff',
+            pointHoverRadius: 5
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            r: {
+              angleLines: { color: 'rgba(255,255,255,0.1)' },
+              grid: { color: 'rgba(255,255,255,0.1)' },
+              pointLabels: { color: '#e2e8f0', font: { size: 12 } },
+              ticks: { backdropColor: 'transparent', color: '#94a3b8', showLabelBackdrop: false }
+            }
+          },
+          plugins: {
+            legend: { display: false }
+          }
         }
-      },
-      plugins: {
-        legend: { display: false }
-      }
+      });
     }
-  });
+  } catch (err) {
+    console.warn('Chart rendering error:', err);
+  }
 }
 
 // --- CSV Export Helper ---
@@ -801,9 +809,9 @@ function exportRecordsToCSV(records, filename = 'enneagram_export.csv') {
     const pName = archetypesMeta[pNum] ? archetypesMeta[pNum].name : '시계공';
     const wCode = r.wing ? r.wing.code : `${pNum}w${pNum === 1 ? 9 : pNum - 1}`;
     
-    const hScore = (s[2] || 0) + (s[3] || 0) + (s[4] || 0);
-    const headScore = (s[5] || 0) + (s[6] || 0) + (s[7] || 0);
-    const gScore = (s[8] || 0) + (s[9] || 0) + (s[1] || 0);
+    const hScore = extractScore(s, 2) + extractScore(s, 3) + extractScore(s, 4);
+    const headScore = extractScore(s, 5) + extractScore(s, 6) + extractScore(s, 7);
+    const gScore = extractScore(s, 8) + extractScore(s, 9) + extractScore(s, 1);
 
     return [
       `"${r.id || ''}"`,
@@ -816,13 +824,13 @@ function exportRecordsToCSV(records, filename = 'enneagram_export.csv') {
       pNum,
       `"${pName}"`,
       `"${wCode}"`,
-      s[1] || 0, s[2] || 0, s[3] || 0, s[4] || 0, s[5] || 0,
-      s[6] || 0, s[7] || 0, s[8] || 0, s[9] || 0,
+      extractScore(s, 1), extractScore(s, 2), extractScore(s, 3), extractScore(s, 4), extractScore(s, 5),
+      extractScore(s, 6), extractScore(s, 7), extractScore(s, 8), extractScore(s, 9),
       hScore, headScore, gScore
     ].join(',');
   });
 
-  const csvContent = '﻿' + [headers.join(','), ...rows].join('\n');
+  const csvContent = '\uFEFF' + [headers.join(','), ...rows].join('\n');
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
   const link = document.createElement('a');
   const url = URL.createObjectURL(blob);
@@ -861,33 +869,8 @@ function seedSampleData() {
     submittedAtFormatted: new Date().toLocaleString('ko-KR')
   };
 
-  const sample2 = {
-    id: 'sample_' + (Date.now() + 1),
-    tester: { name: '이서연', age: '25', job: '디자이너', contact: '010-9876-4321' },
-    contactLast4: '4321',
-    primaryType: { number: 4, name: '거울 수집가' },
-    top3: [
-      { type: 4, name: '거울 수집가', score: 39, percentage: 98 },
-      { type: 5, name: '세상을 저장하는 방랑자', score: 34, percentage: 85 },
-      { type: 7, name: '웃지 않는 광대', score: 28, percentage: 70 }
-    ],
-    wing: {
-      code: '4w5',
-      primaryNum: 4,
-      dominantWingNum: 5,
-      leftWingNum: 3,
-      leftWingScore: 22,
-      rightWingNum: 5,
-      rightWingScore: 34
-    },
-    scores: { 1: 14, 2: 24, 3: 22, 4: 39, 5: 34, 6: 20, 7: 28, 8: 16, 9: 25 },
-    percentages: { 1: 35, 2: 60, 3: 55, 4: 98, 5: 85, 6: 50, 7: 70, 8: 40, 9: 62 },
-    createdAt: new Date().toISOString(),
-    submittedAtFormatted: new Date().toLocaleString('ko-KR')
-  };
-
-  existing.push(sample1, sample2);
+  existing.push(sample1);
   saveStoredRecords(existing);
   renderParticipantsTable();
-  showStatus('테스트 샘플 참가자 2명이 추가되었습니다. (김민수 / 5678, 이서연 / 4321)', 'info');
+  showStatus('테스트 샘플 참가자가 추가되었습니다. (김민수 / 5678)', 'info');
 }
