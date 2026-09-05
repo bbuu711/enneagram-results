@@ -72,9 +72,15 @@ let supabaseClient = null;
 const DEFAULT_SUPABASE_URL = 'https://qcfpkwubdngeqtmxrjrz.supabase.co';
 const DEFAULT_SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFjZnBrd3ViZG5nZXF0bXhyanJ6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0NTM0MDQsImV4cCI6MjEwNDAyOTQwNH0.rnziVpIWggyCBeF6uIMc1OaDMSNJGAIQ9NMm7aho7dg';
 
+function getCleanSupabaseCredentials() {
+  let url = localStorage.getItem('supabase_url') || DEFAULT_SUPABASE_URL;
+  let key = localStorage.getItem('supabase_anon_key') || DEFAULT_SUPABASE_KEY;
+  url = url.trim().replace(/\/rest\/v1\/?$/, '').replace(/\/$/, '');
+  return { url, key };
+}
+
 function initSupabase() {
-  const url = localStorage.getItem('supabase_url') || DEFAULT_SUPABASE_URL;
-  const key = localStorage.getItem('supabase_anon_key') || DEFAULT_SUPABASE_KEY;
+  const { url, key } = getCleanSupabaseCredentials();
 
   if (url && key && window.supabase) {
     try {
@@ -84,7 +90,6 @@ function initSupabase() {
       dbStatusBadge.style.color = '#86efac';
       dbStatusBadge.style.borderColor = 'rgba(34, 197, 94, 0.4)';
       
-      // Subscribe to realtime inserts
       setupRealtimeListener();
     } catch (e) {
       console.warn('Supabase initialization error:', e);
@@ -96,7 +101,7 @@ function initSupabase() {
 }
 
 function setLocalStatus() {
-  dbStatusBadge.textContent = '⚪ 로컬 스토리지 모드';
+  dbStatusBadge.textContent = '⚪ 클라우드 DB 대기중';
   dbStatusBadge.style.background = 'rgba(148, 163, 184, 0.15)';
   dbStatusBadge.style.color = '#cbd5e1';
   dbStatusBadge.style.borderColor = 'rgba(148, 163, 184, 0.3)';
@@ -109,7 +114,7 @@ function setupRealtimeListener() {
       .channel('enneagram_results_realtime')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'enneagram_results' }, payload => {
         console.log('Realtime new result received:', payload.new);
-        showStatus(`🔔 새로운 검사 제출: [${payload.new.name || '방랑자'}] 님의 결과가 실시간으로 수신되었습니다!`, 'info');
+        showStatus(`🔔 새로운 검사 제출: [${payload.new.name || '방랑자'}] 님의 결과가 수신되었습니다!`, 'info');
         loadAllRecords();
       })
       .subscribe();
@@ -118,11 +123,12 @@ function setupRealtimeListener() {
   }
 }
 
-// --- Load Records (Cloud Supabase + Local Merge) ---
+// --- Load Records (Cloud Supabase + REST Fallback + Local Merge) ---
 async function loadAllRecords() {
-  let records = [];
+  const { url, key } = getCleanSupabaseCredentials();
+  let rawRows = [];
 
-  // 1. Try Supabase
+  // 1. Try Supabase Client SDK
   if (supabaseClient) {
     try {
       const { data, error } = await supabaseClient
@@ -130,55 +136,92 @@ async function loadAllRecords() {
         .select('*')
         .order('created_at', { ascending: false });
 
-      if (!error && data) {
-        records = data.map(row => {
-          const rowScores = row.type_scores || {};
-          const rowPercentages = row.type_percentages || {};
-          
-          // Calculate true sorted top 3 dynamically
-          const sortedList = [];
-          for (let i = 1; i <= 9; i++) {
-            const sc = rowScores[i] !== undefined ? Number(rowScores[i]) : 0;
-            const pct = rowPercentages[i] !== undefined ? Number(rowPercentages[i]) : Math.round((sc / 40) * 100);
-            sortedList.push({
-              type: i,
-              name: archetypesMeta[i] ? archetypesMeta[i].name : `${i}번`,
-              score: sc,
-              percentage: pct
-            });
-          }
-          sortedList.sort((a, b) => b.score - a.score);
-          const computedTop3 = sortedList.slice(0, 3);
-          const pNum = computedTop3[0] ? computedTop3[0].type : (row.primary_type_number || 1);
-
-          return {
-            id: row.id || ('res_' + Date.now()),
-            tester: {
-              name: row.name || '방랑자',
-              age: row.age || '',
-              job: row.job || '',
-              contact: row.contact || ''
-            },
-            contactLast4: (row.contact ? String(row.contact).replace(/\D/g, '').slice(-4) : ''),
-            primaryType: {
-              number: pNum,
-              name: archetypesMeta[pNum] ? archetypesMeta[pNum].name : row.primary_type_name || ''
-            },
-            top3: computedTop3,
-            scores: rowScores,
-            percentages: rowPercentages,
-            answers: row.answers || {},
-            createdAt: row.created_at,
-            submittedAtFormatted: row.created_at ? new Date(row.created_at).toLocaleString('ko-KR') : ''
-          };
-        });
+      if (!error && Array.isArray(data)) {
+        rawRows = data;
       }
     } catch (e) {
-      console.error('Supabase fetch error:', e);
+      console.warn('Supabase SDK fetch error:', e);
     }
   }
 
-  // 2. LocalStorage merge
+  // 2. Direct REST Fetch Fallback if SDK didn't get rows
+  if (rawRows.length === 0 && url && key) {
+    try {
+      const res = await fetch(`${url}/rest/v1/enneagram_results?select=*&order=created_at.desc`, {
+        headers: {
+          'apikey': key,
+          'Authorization': `Bearer ${key}`
+        }
+      });
+      if (res.ok) {
+        rawRows = await res.json();
+      }
+    } catch (err) {
+      console.warn('REST fallback fetch error:', err);
+    }
+  }
+
+  let records = [];
+  if (Array.isArray(rawRows) && rawRows.length > 0) {
+    records = rawRows.map(row => {
+      const rowScores = row.type_scores || {};
+      const rowPercentages = row.type_percentages || {};
+      
+      const sortedList = [];
+      for (let i = 1; i <= 9; i++) {
+        const sc = rowScores[i] !== undefined ? Number(rowScores[i]) : 0;
+        const pct = rowPercentages[i] !== undefined ? Number(rowPercentages[i]) : Math.round((sc / 40) * 100);
+        sortedList.push({
+          type: i,
+          name: archetypesMeta[i] ? archetypesMeta[i].name : `${i}번`,
+          score: sc,
+          percentage: pct
+        });
+      }
+      sortedList.sort((a, b) => b.score - a.score);
+      const computedTop3 = sortedList.slice(0, 3);
+      const pNum = computedTop3[0] ? computedTop3[0].type : (row.primary_type_number || 1);
+
+      // Calculate Wing
+      const leftNum = pNum === 1 ? 9 : pNum - 1;
+      const rightNum = pNum === 9 ? 1 : pNum + 1;
+      const leftScore = rowScores[leftNum] !== undefined ? Number(rowScores[leftNum]) : 0;
+      const rightScore = rowScores[rightNum] !== undefined ? Number(rowScores[rightNum]) : 0;
+      const domNum = leftScore >= rightScore ? leftNum : rightNum;
+
+      return {
+        id: row.id || ('res_' + Date.now()),
+        tester: {
+          name: row.name || '방랑자',
+          age: row.age || '',
+          job: row.job || '',
+          contact: row.contact || ''
+        },
+        contactLast4: (row.contact ? String(row.contact).replace(/\D/g, '').slice(-4) : ''),
+        primaryType: {
+          number: pNum,
+          name: archetypesMeta[pNum] ? archetypesMeta[pNum].name : row.primary_type_name || ''
+        },
+        top3: computedTop3,
+        wing: {
+          code: `${pNum}w${domNum}`,
+          primaryNum: pNum,
+          dominantWingNum: domNum,
+          leftWingNum: leftNum,
+          leftWingScore: leftScore,
+          rightWingNum: rightNum,
+          rightWingScore: rightScore
+        },
+        scores: rowScores,
+        percentages: rowPercentages,
+        answers: row.answers || {},
+        createdAt: row.created_at,
+        submittedAtFormatted: row.created_at ? new Date(row.created_at).toLocaleString('ko-KR') : ''
+      };
+    });
+  }
+
+  // 3. LocalStorage merge
   try {
     const rawLocal = localStorage.getItem('enneagram_results_db');
     if (rawLocal) {
@@ -197,6 +240,14 @@ async function loadAllRecords() {
   records.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
   saveStoredRecords(records);
   renderParticipantsTable(records);
+
+  if (records.length > 0) {
+    dbStatusBadge.textContent = '🟢 클라우드 DB 연결됨';
+    dbStatusBadge.style.background = 'rgba(34, 197, 94, 0.2)';
+    dbStatusBadge.style.color = '#86efac';
+    dbStatusBadge.style.borderColor = 'rgba(34, 197, 94, 0.4)';
+  }
+
   return records;
 }
 
@@ -306,7 +357,8 @@ function setupEventListeners() {
 }
 
 // --- Search Handler (이름 + 전화번호 끝자리 4자리) ---
-function handleSearch() {
+async function handleSearch() {
+  await loadAllRecords();
   const queryName = (searchNameInput.value || '').trim();
   const queryLast4 = (searchLast4Input.value || '').trim().replace(/\D/g, '');
 
