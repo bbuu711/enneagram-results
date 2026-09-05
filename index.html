@@ -25,27 +25,27 @@
 
     <!-- Search Section -->
     <section class="search-card">
-      <h2 class="search-card-title pixel-font">🔍 제출자 검색 및 결과 조회</h2>
+      <h2 class="search-card-title serif-font">🔍 제출자 검색 및 결과 조회</h2>
       <div class="search-form">
         <div class="form-group">
-          <label for="search-name" class="pixel-font">제출자 성함</label>
-          <input type="text" id="search-name" class="form-input pixel-font" placeholder="예: 홍길동">
+          <label for="search-name">제출자 성함</label>
+          <input type="text" id="search-name" class="form-input" placeholder="예: 홍길동">
         </div>
         <div class="form-group">
-          <label for="search-last4" class="pixel-font">전화번호 끝 4자리</label>
-          <input type="text" id="search-last4" class="form-input pixel-font" placeholder="예: 5678" maxlength="4">
+          <label for="search-last4">전화번호 끝 4자리</label>
+          <input type="text" id="search-last4" class="form-input" placeholder="예: 5678" maxlength="4">
         </div>
-        <button id="btn-search" class="btn btn-primary pixel-font" style="height: 48px;">조회하기</button>
-        <button id="btn-show-all" class="btn btn-secondary pixel-font" style="height: 48px;">전체 목록</button>
+        <button id="btn-search" class="btn btn-primary" style="height: 48px;">조회하기</button>
+        <button id="btn-show-all" class="btn btn-secondary" style="height: 48px;">전체 목록</button>
       </div>
-      <div id="search-status" class="status-msg pixel-font"></div>
+      <div id="search-status" class="status-msg"></div>
     </section>
 
     <!-- Participants Table Section -->
     <section id="participants-section" class="participants-section">
       <div class="table-header-wrap">
         <div style="display: flex; align-items: center; gap: 10px;">
-          <h3 class="pixel-font" style="color: var(--gold); font-size: 16px;">📋 검사 제출자 목록 (<span id="participant-count">0</span>명)</h3>
+          <h3 class="serif-font" style="color: var(--gold); font-size: 18px;">📋 검사 제출자 목록 (<span id="participant-count">0</span>명)</h3>
           <span id="db-status-badge" class="badge" style="font-size: 11px; background: rgba(59,130,246,0.15); color: #93c5fd; border: 1px solid rgba(59,130,246,0.3);">DB 확인중...</span>
         </div>
         <div style="display: flex; gap: 8px;">
