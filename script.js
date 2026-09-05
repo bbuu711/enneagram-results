@@ -358,8 +358,7 @@ function setupEventListeners() {
 
 // --- Search Handler (이름 + 전화번호 끝자리 4자리) ---
 async function handleSearch() {
-  await loadAllRecords();
-  const queryName = (searchNameInput.value || '').trim();
+  const queryName = (searchNameInput.value || '').trim().toLowerCase();
   const queryLast4 = (searchLast4Input.value || '').trim().replace(/\D/g, '');
 
   if (!queryName && !queryLast4) {
@@ -367,31 +366,34 @@ async function handleSearch() {
     return;
   }
 
-  const records = getStoredRecords();
+  showStatus('클라우드 DB에서 실시간 검색 중...', 'info');
+  const records = await loadAllRecords();
+
   const filtered = records.filter(r => {
-    const nameMatch = queryName ? (r.tester && r.tester.name && r.tester.name.includes(queryName)) : true;
+    const testerName = ((r.tester && r.tester.name) || '').trim().toLowerCase();
+    const nameMatch = queryName ? (testerName.includes(queryName) || queryName.includes(testerName)) : true;
     
     let contactDigits = '';
     if (r.contactLast4) {
-      contactDigits = r.contactLast4;
+      contactDigits = String(r.contactLast4).replace(/\D/g, '');
     } else if (r.tester && r.tester.contact) {
-      contactDigits = String(r.tester.contact).replace(/\D/g, '').slice(-4);
+      contactDigits = String(r.tester.contact).replace(/\D/g, '');
     }
-    const last4Match = queryLast4 ? (contactDigits.endsWith(queryLast4)) : true;
+    const last4Match = queryLast4 ? (contactDigits.endsWith(queryLast4) || contactDigits.includes(queryLast4)) : true;
 
     return nameMatch && last4Match;
   });
 
   if (filtered.length === 0) {
-    showStatus(`일치하는 참가자 기록을 찾을 수 없습니다. (검색어: ${queryName || '-'} / ${queryLast4 || '-'})`, 'error');
+    showStatus(`일치하는 참가자 기록을 찾을 수 없습니다. (입력: ${queryName || '-'} / ${queryLast4 || '-'})`, 'error');
     reportCard.style.display = 'none';
     renderParticipantsTable([]);
   } else if (filtered.length === 1) {
-    showStatus(`검색 완료: 1건의 기록을 찾았습니다.`, 'info');
+    showStatus(`검색 완료: [${(filtered[0].tester && filtered[0].tester.name) || '참가자'}] 님의 기록을 찾았습니다.`, 'info');
     renderParticipantsTable(filtered);
     displayDetailedReport(filtered[0]);
   } else {
-    showStatus(`검색 완료: ${filtered.length}건의 일치하는 기록이 있습니다. 목록에서 선택해 주세요.`, 'info');
+    showStatus(`검색 완료: ${filtered.length}건의 일치하는 기록이 있습니다. 아래 목록에서 [상세 분석]을 눌러주세요.`, 'info');
     renderParticipantsTable(filtered);
     reportCard.style.display = 'none';
   }
