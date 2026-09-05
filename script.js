@@ -193,9 +193,6 @@ async function loadAllRecords() {
     console.error('Local merge error:', e);
   }
 
-  // Filter out test record '조부경'
-  records = records.filter(r => !(r.tester && r.tester.name && r.tester.name.includes('조부경')));
-  
   // Sort latest first
   records.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
   saveStoredRecords(records);
@@ -208,7 +205,6 @@ function getStoredRecords() {
     const raw = localStorage.getItem('enneagram_results_db');
     if (!raw) return [];
     let list = JSON.parse(raw);
-    list = list.filter(r => !(r.tester && r.tester.name && r.tester.name.includes('조부경')));
     return list;
   } catch (e) {
     return [];
