@@ -154,12 +154,12 @@ async function loadAllRecords() {
     }
   }
 
-  // Clean reset cutoff: ignore previous test entries (ID <= 6). All new submissions from now on will display cleanly!
-  const RESET_CUTOFF_MS = new Date('2026-09-05T02:15:00Z').getTime();
+  // Clean reset cutoff: ignore previous test entries (ID <= 6 or submitted before reset). All new submissions will show up!
+  const RESET_CUTOFF_MS = new Date('2026-09-05T02:45:00Z').getTime();
   const validRows = rawRows.filter(row => {
-    if (row.id && Number(row.id) > 6) return true;
-    if (row.created_at && new Date(row.created_at).getTime() > RESET_CUTOFF_MS) return true;
-    return false;
+    const rowId = Number(row.id || 0);
+    const rowTime = row.created_at ? new Date(row.created_at).getTime() : 0;
+    return rowId > 6 && rowTime > RESET_CUTOFF_MS;
   });
 
   let records = [];
@@ -226,18 +226,8 @@ async function loadAllRecords() {
     });
   }
 
-  // 3. LocalStorage merge
-  try {
-    const rawLocal = localStorage.getItem('enneagram_results_db');
-    if (rawLocal) {
-      const localList = JSON.parse(rawLocal);
-      localList.forEach(loc => {
-        if (!records.some(r => r.id === loc.id || (r.tester && loc.tester && r.tester.name === loc.tester.name && r.createdAt === loc.createdAt))) {
-          records.push(loc);
-        }
-      });
-    }
-  } catch (e) {}
+  // Local cache synchronization
+  localStorage.setItem('enneagram_results_db', JSON.stringify(records));
 
   records.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
   saveStoredRecords(records);
@@ -278,6 +268,12 @@ function saveStoredRecords(records) {
 
 // --- Initialize Page ---
 document.addEventListener('DOMContentLoaded', () => {
+  // Purge any stale local test cache on fresh version
+  if (!localStorage.getItem('enneagram_reset_v20260905')) {
+    localStorage.removeItem('enneagram_results_db');
+    localStorage.removeItem('enneagram_local_results');
+    localStorage.setItem('enneagram_reset_v20260905', 'true');
+  }
   initSupabase();
   loadAllRecords();
   setupEventListeners();
