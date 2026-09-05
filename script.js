@@ -154,9 +154,17 @@ async function loadAllRecords() {
     }
   }
 
+  // Clean reset cutoff: ignore previous test entries (ID <= 6). All new submissions from now on will display cleanly!
+  const RESET_CUTOFF_MS = new Date('2026-09-05T02:15:00Z').getTime();
+  const validRows = rawRows.filter(row => {
+    if (row.id && Number(row.id) > 6) return true;
+    if (row.created_at && new Date(row.created_at).getTime() > RESET_CUTOFF_MS) return true;
+    return false;
+  });
+
   let records = [];
-  if (Array.isArray(rawRows) && rawRows.length > 0) {
-    records = rawRows.map(row => {
+  if (Array.isArray(validRows) && validRows.length > 0) {
+    records = validRows.map(row => {
       const rowScores = row.type_scores || {};
       const rowPercentages = row.type_percentages || {};
       
