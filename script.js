@@ -131,30 +131,47 @@ async function loadAllRecords() {
         .order('created_at', { ascending: false });
 
       if (!error && data) {
-        records = data.map(row => ({
-          id: row.id || ('res_' + Date.now()),
-          tester: {
-            name: row.name || '방랑자',
-            age: row.age || '',
-            job: row.job || '',
-            contact: row.contact || ''
-          },
-          contactLast4: (row.contact ? String(row.contact).replace(/\D/g, '').slice(-4) : ''),
-          primaryType: {
-            number: row.primary_type_number || 1,
-            name: row.primary_type_name || ''
-          },
-          top3: [
-            { type: row.primary_type_number || 1, name: row.top1_name || '', score: (row.type_scores ? row.type_scores[row.primary_type_number] : 0) },
-            { type: 2, name: row.top2_name || '', score: 0 },
-            { type: 3, name: row.top3_name || '', score: 0 }
-          ],
-          scores: row.type_scores || {},
-          percentages: row.type_percentages || {},
-          answers: row.answers || {},
-          createdAt: row.created_at,
-          submittedAtFormatted: row.created_at ? new Date(row.created_at).toLocaleString('ko-KR') : ''
-        }));
+        records = data.map(row => {
+          const rowScores = row.type_scores || {};
+          const rowPercentages = row.type_percentages || {};
+          
+          // Calculate true sorted top 3 dynamically
+          const sortedList = [];
+          for (let i = 1; i <= 9; i++) {
+            const sc = rowScores[i] !== undefined ? Number(rowScores[i]) : 0;
+            const pct = rowPercentages[i] !== undefined ? Number(rowPercentages[i]) : Math.round((sc / 40) * 100);
+            sortedList.push({
+              type: i,
+              name: archetypesMeta[i] ? archetypesMeta[i].name : `${i}번`,
+              score: sc,
+              percentage: pct
+            });
+          }
+          sortedList.sort((a, b) => b.score - a.score);
+          const computedTop3 = sortedList.slice(0, 3);
+          const pNum = computedTop3[0] ? computedTop3[0].type : (row.primary_type_number || 1);
+
+          return {
+            id: row.id || ('res_' + Date.now()),
+            tester: {
+              name: row.name || '방랑자',
+              age: row.age || '',
+              job: row.job || '',
+              contact: row.contact || ''
+            },
+            contactLast4: (row.contact ? String(row.contact).replace(/\D/g, '').slice(-4) : ''),
+            primaryType: {
+              number: pNum,
+              name: archetypesMeta[pNum] ? archetypesMeta[pNum].name : row.primary_type_name || ''
+            },
+            top3: computedTop3,
+            scores: rowScores,
+            percentages: rowPercentages,
+            answers: row.answers || {},
+            createdAt: row.created_at,
+            submittedAtFormatted: row.created_at ? new Date(row.created_at).toLocaleString('ko-KR') : ''
+          };
+        });
       }
     } catch (e) {
       console.error('Supabase fetch error:', e);
@@ -447,12 +464,25 @@ function displayDetailedReport(record) {
   const primaryMeta = archetypesMeta[primaryNum] || archetypesMeta[1];
   document.getElementById('report-primary-badge').textContent = `주유형: ${primaryNum}번 ${primaryMeta.name}`;
 
-  // 2. Top 3 Cards
+  // 2. Top 3 Cards (Accurately computed from scores)
   const top3Container = document.getElementById('top3-container');
   top3Container.innerHTML = '';
-  const top3List = record.top3 || [
-    { type: primaryNum, score: record.scores ? record.scores[primaryNum] : 30, percentage: 80 }
-  ];
+
+  const scores = record.scores || {};
+  const percentages = record.percentages || {};
+
+  const sortedList = [];
+  for (let i = 1; i <= 9; i++) {
+    const sc = scores[i] !== undefined ? Number(scores[i]) : 0;
+    const pct = percentages[i] !== undefined ? Number(percentages[i]) : Math.round((sc / 40) * 100);
+    sortedList.push({
+      type: i,
+      score: sc,
+      percentage: pct
+    });
+  }
+  sortedList.sort((a, b) => b.score - a.score);
+  const top3List = sortedList.slice(0, 3);
 
   top3List.forEach((item, index) => {
     const meta = archetypesMeta[item.type] || archetypesMeta[1];
@@ -464,9 +494,9 @@ function displayDetailedReport(record) {
       <div class="top3-img-wrap">
         <img src="${meta.img}" alt="${meta.name}">
       </div>
-      <div class="top3-name pixel-font">${item.type}번. ${meta.name}</div>
-      <div class="top3-score pixel-font">${item.score || 0}점 (${item.percentage || 0}%)</div>
-      <div class="top3-keywords pixel-font">${meta.keywords.join(' · ')}</div>
+      <div class="top3-name serif-font">${item.type}번. ${meta.name}</div>
+      <div class="top3-score gothic-font">${item.score}점 <span style="font-size: 13.5px; font-weight: normal; color: #cbd5e1;">(${item.percentage}%)</span></div>
+      <div class="top3-keywords gothic-font">${meta.keywords.join(' · ')}</div>
     `;
     top3Container.appendChild(card);
   });
